@@ -2,5 +2,5 @@ __pycache__
 .vscode
 .DS_Store
 .json
-secure.py
+secure.py/
 
