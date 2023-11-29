@@ -8,7 +8,7 @@ async def say_hello(message: types.Message):
     kb = [
         [types.KeyboardButton(text = "Add an event")],
         [types.KeyboardButton(text = "Delete an event")],
-        [types.KeyboardButton(text = "look when we have a free time")]
+        [types.KeyboardButton(text = "20 upcoming events")]
     ]
     keyboard = types.ReplyKeyboardMarkup(
         keyboard = kb,

@@ -1,75 +1,69 @@
 import datetime
-import json
-from aiogram import F, types, Router
-from aiogram.fsm.storage.memory import MemoryStorage
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
+import os
 
+from aiogram import F, types, Router
+from googleapiclient.discovery import build
+from aiogram.types import Message, message
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.errors import HttpError
 
 router = Router()
 
-# Инициализация сервисного аккаунта 
-credentials = service_account.Credentials.from_service_account_file('creds1.json')
 
+# файл с учетными данными гугл
+SERVICE_ACCOUNT_FILE = 'creds3.json'
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 # Функция для получения событий из календаря
-def get_events(start_date, end_date):
+
+
+@router.message(F.text.lower() == "20 upcoming events")
+async def get_events(message: types.Message):
+    ans_str = "Your upcoming events: \n"
     # Создание объекта для доступа к API
-    service = build('calendar', 'v3', credentials=credentials)
+    creds = None
 
-    
+    if os.path.exists('token.json'):  # catch
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)  # catch
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'creds3.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+    try:
+        service = build("calendar", "v3", credentials=creds)
 
-    # Выполнение запроса для получения событий за указанный период
-    events_result = service.events().list(
-        calendarId='primary',
-        timeMin=start_date.isoformat(),
-        timeMax=end_date.isoformat(),
-        singleEvents=True,
-        orderBy='startTime'
-    ).execute()
+        now = datetime.datetime.now().isoformat() + "Z"
 
-    # Получение списка событий
-    events = events_result.get('items', [])
+        events_result = service.events().list(
+            calendarId='primary',
+            timeMin=now,
+            maxResults=20,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        events = events_result.get('items', [])
 
-    return events
-
-
-@router.message(F.text.lower() == "look when we have a free time")
-async def get_free_time(message: types.Message):
-    # Определение даты проверки периода
-    today = datetime.date.today()
-    end_date = today + datetime.timedelta(days=14)
-
-    # Получение списка событий из календаря за указанный период
-    events = get_events(today, end_date)
-
-    # Определение свободных промежутков времени
-    free_slots = []
-    current_datetime = datetime.datetime.combine(today, datetime.time(0, 0))
-    while current_datetime.date() <= end_date:
-        # Проверка на свободность времени 
-        is_slot_free = True
+        if not events:
+            print('No events')
+            return
         for event in events:
-            event_start = datetime.datetime.fromisoformat(event['start']['dateTime'])
-            event_end = datetime.datetime.fromisoformat(event['end']['dateTime'])
-            if event_start <= current_datetime < event_end:
-                is_slot_free = False
-                break
+            start = event['start'].get('dateTime', event['start'].get('date'))
+            output1 = start, event['summary']
+            done_output = f"'You have', {event['summary']}, 'at', {start[:10]}, 'at', {start[11:16]}"
+            sec_output = done_output.replace(',', '')
+            ready_out = sec_output.replace("'", '')
+            ans_str = ans_str + '\n' + ready_out + '\n'
 
-        # Добавление свободного промежутка времени в список
-        if is_slot_free:
-            free_slots.append(current_datetime)
+        await message.reply(ans_str)
 
-        # Переход к следующему промежутку времени
-        current_datetime += datetime.timedelta(minutes=30)
-
-    # Отправка сообщения с найденными свободными промежутками времени
-    if free_slots:
-        response = "Свободные промежутки времени:\n"
-        for slot in free_slots:
-            response += f"- {slot.time()}\n"
-    else:
-        response = "Нет свободных промежутков времени."
-
-    await message.answer(response)
-
+    except HttpError as err:
+        print("You got an error", err)

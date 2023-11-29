@@ -1,104 +1,108 @@
-from aiogram import Router, types, F
+import os
+
+from aiogram.types import message
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from aiogram import Router, types, F, Bot
 from aiogram.fsm.storage.memory import MemoryStorage, State
 from aiogram.filters.state import StatesGroup
 from aiogram.fsm.context import FSMContext
-
-import executor as executor
-from google.oauth2 import service_account
-import googleapiclient.discovery
-from aiohttp import web
+from google_auth_oauthlib.flow import InstalledAppFlow
+import datetime
 from googleapiclient.discovery import build
-from google.oauth2 import service_account
-# Импортируйте необходимые модули для работы с Google Calendar API
+from googleapiclient.errors import HttpError
+
+import secure
 
 
 storage = MemoryStorage()
 router = Router()
+bot = Bot(secure.BOT_TOKEN)
+day_start = ''
+
 
 # Создание класса состояний
 class DeleteEventStates(StatesGroup):
-    waiting_for_start_date = State()
-    waiting_for_end_date = State()
+    beginning_st = State()
+    ending_st = State()
+
+
+# файл с учетными данными гугл
+SERVICE_ACCOUNT_FILE = 'creds3.json'
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 
 @router.message(F.text.lower() == 'delete an event')
 async def delete_event_handler(message: types.Message, state: FSMContext):
-    await message.reply("Введите дату начала события в формате ГГГГ-ММ-ДД:")
-
-    # Устанавливаем состояние ожидания ввода
-    await state.set_state(DeleteEventStates.waiting_for_start_date)
+    await message.reply("Введите дату, где находится событие в формате ДД.ММ.ГГГГ")
+    await state.set_state(DeleteEventStates.beginning_st)  # Установка состояния на ввод даты
 
 
-@router.message(DeleteEventStates.waiting_for_start_date)
-async def process_start_date(message: types.Message, state: FSMContext):
-    start_date = message.text.strip() # Убираем знаки из инпута даты
+@router.message(DeleteEventStates.beginning_st)
+async def get_the_date(message: types.Message, state: FSMContext):
+    try:
+        start_date = datetime.datetime.strptime(message.text, '%d.%m.%Y').date()
 
-    # Проверяем корректность введеннной даты 
-    if not is_valid_date(start_date):
-        await message.reply("Некорректный формат даты. Пожалуйста, используйте формат: ГГГГ-ММ-ДД")
-        return
+        await delete_event(start_date)
 
-    # Сохр дату начала события в состоянии 
-    await state.update_data(start_date=start_date)
+    except ValueError as e:
+        await message.reply("Incorrect input. Please try again. DD.MM.YYYY")
 
-    await message.reply("Введите дату окончания события в формате ГГГГ-ММ-ДД:")
-
-    # состояние ожидания даты окончания события
-    await state.set_state(DeleteEventStates.waiting_for_end_date)
-
-
-@router.message(DeleteEventStates.waiting_for_end_date)
-async def process_end_date(message: types.Message, state: FSMContext):
-    end_date = message.text.strip()
-
-    # Проверяем корректность введенной даты окончания события
-    if not is_valid_date(end_date):
-        await message.reply("Некорректный формат даты. Пожалуйста, используйте формат: ГГГГ-ММ-ДД")
-        return
-
-    # Извлекаем дату начала события из состояния бота
-    data = await state.get_data()
-    start_date = data.get('start_date')
-
-    # Удаление события из Google Calendar API
-    delete_event(start_date, end_date)
-
-    await message.reply("Событие успешно удалено")
-
-    # Завершаем состояние
     await state.clear()
 
 
-def is_valid_date(date):
-    # проверка формата
+async def delete_event(start_date):
+    ans_str = 'events: \n'
 
-    return True
+    creds = None
 
+    if os.path.exists('token.json'):  # catch
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'creds3.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
 
-def delete_event(start_date, end_date):
-    
-    # id
-    calendar_id = '3849e27ee5d66228f160fe12d6ba15dc5399e96d573787fb5190d45884c57b64@group.calendar.google.com'
+    try:
+        service = build("calendar", "v3", credentials=creds)
 
-    # Загрузка учетных данных
-    credentials_path = service_account.Credentials.from_service_account_file('creds1.json',
-                                                                       scopes=['https://www.googleapis.com/auth/calendar'])
+        end_date = start_date + datetime.timedelta(days=1)
 
-    # Подключение к гугл апи
-    credentials = service_account.Credentials.from_service_account_file('creds1.json')
-    service = googleapiclient.discovery.build('calendar', 'v3', credentials=credentials)
+        start_date2 = str(start_date) + 'T00:00:00Z'
+        end_date2 = str(end_date) + 'T00:00:00Z'
 
-    # Поиск событий с указанным интервалом
-    events_list = service.events().list(calendarId=calendar_id,
-                                        timeMin=start_date,
-                                        timeMax=end_date).execute()
+        events_result = service.events().list(
+            calendarId='primary',
+            timeMin=start_date2,
+            timeMax=end_date2,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
 
-    if 'items' in events_list:
-        events = events_list['items']
+        events = events_result.get('items', [])
 
-        # Удаление каждого найденного события
+        if not events:
+            print('No events')
+            return
         for event in events:
-            event_id = event['id']
-            service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+            start = event['start'].get('dateTime', event['start'].get('date'))
+            output1 = start, event['summary']
+            done_output = f"'You have', {event['summary']}, 'at', {start[:10]}, 'at', {start[11:16]}"
+            sec_output = done_output.replace(',', '')
+            ready_out = sec_output.replace("'", '')
+            ans_str = ans_str + '\n' + ready_out + '\n'
+
+        await message.reply(ans_str)
+
+    except HttpError as err:
+        print("You got an error", err)
+
 
     
